@@ -14,7 +14,8 @@
   Source: https://github.com/crossainthero-lab/fix
 
   Usage (from Administrator CMD, via the r.cmd launcher):
-    r.cmd              install / re-run safely
+    r.cmd CODE         install, fetching the Tailscale key with the helper's one-time CODE
+    r.cmd              install / re-run safely (asks you to paste the key instead)
     r.cmd status       show what is installed, change nothing
     r.cmd check        pre-flight checks only, change nothing
     r.cmd uninstall    remove everything this tool added
@@ -23,12 +24,14 @@
 #>
 [CmdletBinding()]
 param(
+    [Parameter(Position = 0)][string]$Arg1 = '',   # uninstall | status | check | <16-character provisioning code>
     [switch]$Uninstall,
     [switch]$Status,
     [switch]$CheckOnly,
     [switch]$Yes,                 # skip the confirmation question
     [string]$PublicKey = '',      # override the built-in helper public key (one line)
-    [string]$AuthKeyFile = ''     # read the Tailscale key from this file instead of prompting
+    [string]$AuthKeyFile = '',    # read the Tailscale key from this file instead of prompting
+    [string]$Code = ''            # one-time provisioning code from the helper (fetches the Tailscale key)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -40,6 +43,7 @@ $ProgressPreference    = 'SilentlyContinue'
 $script:Version      = '1.0.0'
 $script:HelperKey    = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILPnXnGuT+Wuk5tsi15Vix8r6+3NNlAtSRVkF5ir1H94 rescue-support'
 $script:KeyMarker    = 'rescue-support'
+$script:GateUrl      = 'https://rescue-gate.stefanp0309.workers.dev'
 $script:Dir          = Join-Path $env:ProgramData 'RescueSupport'
 $script:StateFile    = Join-Path $script:Dir 'state.json'
 $script:LogFile      = $null
@@ -476,7 +480,42 @@ function Wait-TailscaleDaemon([string]$Exe) {
     Stop-Rescue 'The Tailscale service is running but is not answering.' 35
 }
 
+function Invoke-Gate([string]$Path, $Body, [int]$TimeoutSec = 20) {
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    $json = $Body | ConvertTo-Json -Depth 4 -Compress
+    return Invoke-RestMethod -Method Post -Uri ($script:GateUrl + $Path) -ContentType 'application/json' -Body $json -TimeoutSec $TimeoutSec
+}
+
+function Get-KeyFromGate {
+    if ($Code -notmatch '^[a-z2-7]{16}$') { Stop-Rescue 'The provisioning code is not valid (it is 16 letters and digits). Check what your helper sent.' 36 }
+    Write-RLog 'INFO' 'Fetching the one-time Tailscale key from the helper''s provisioning service...'
+    try {
+        $r = Invoke-Gate '/redeem' @{ code = $Code }
+    } catch {
+        $st = 0; try { $st = [int]$_.Exception.Response.StatusCode } catch { }
+        if ($st -eq 404) { Stop-Rescue 'That provisioning code is unknown or has expired. Ask the helper for a new one.' 36 }
+        if ($st -eq 410) { Stop-Rescue 'That provisioning code was already used. Ask the helper for a new one.' 36 }
+        Stop-Rescue ("Could not reach the provisioning service: {0}" -f $_.Exception.Message) 38
+    }
+    $k = [string]$r.key
+    if ($k -notmatch '^tskey-[A-Za-z0-9_-]{10,}$') { Stop-Rescue 'The provisioning service returned something unexpected.' 38 }
+    [void]$script:Secrets.Add($k)
+    return $k
+}
+
+function Send-Report([bool]$Ok, [string]$Message, $Extra) {
+    # Best effort: tells the helper the connection details (computer, Windows user, Tailscale address, result). Never throws.
+    if (-not $Code -or $Code -notmatch '^[a-z2-7]{16}$') { return }
+    try {
+        $rep = @{ ok = $Ok; message = (Hide-Secrets $Message); computer = $env:COMPUTERNAME; user = $env:USERNAME; version = $script:Version }
+        if ($Extra) { foreach ($k in $Extra.Keys) { if ($Extra[$k]) { $rep[$k] = [string]$Extra[$k] } } }
+        [void](Invoke-Gate '/report' @{ code = $Code; report = $rep } 15)
+        Write-RLog 'LOG' 'Sent the connection details to the helper.'
+    } catch { Write-RLog 'LOG' ('Could not send the report to the helper: ' + $_.Exception.Message) }
+}
+
 function Read-AuthKey {
+    if ($Code -and -not $AuthKeyFile) { return (Get-KeyFromGate) }
     if ($AuthKeyFile) {
         if (-not (Test-Path -LiteralPath $AuthKeyFile)) { Stop-Rescue ("Key file not found: " + $AuthKeyFile) 36 }
         return ((Get-Content -LiteralPath $AuthKeyFile -Raw).Trim())
@@ -794,6 +833,15 @@ function Invoke-Main {
     try {
         Write-Host ''
         Write-Host ("Rescue Support {0}" -f $script:Version) -ForegroundColor Cyan
+        if ($Arg1) {
+            switch -Regex ($Arg1.ToLower()) {
+                '^(-?-?)uninstall$' { $Uninstall = [switch]$true }
+                '^(-?-?)status$'    { $Status = [switch]$true }
+                '^(-?-?)check$'     { $CheckOnly = [switch]$true }
+                '^[a-z2-7]{16}$'    { $Code = $Arg1.ToLower() }
+                default             { Stop-Rescue ("Unknown option '{0}'. Use: uninstall, status, check, or the 16-character code from your helper." -f $Arg1) 2 }
+            }
+        }
         if (-not (Test-IsAdmin)) { Stop-Rescue 'This window is not elevated. Open "Command Prompt" with Run as administrator and try again.' 10 }
         Initialize-WorkDir
         Load-State
@@ -817,6 +865,7 @@ function Invoke-Main {
             Write-Host '   This will let a trusted helper connect to THIS computer over an encrypted Tailscale link:' -ForegroundColor White
             Write-Host '     - install Windows OpenSSH Server and Tailscale (from Microsoft / tailscale.com)' -ForegroundColor White
             Write-Host '     - allow SSH only from Tailscale addresses; the helper still needs your Windows password or their SSH key' -ForegroundColor White
+            if ($Code) { Write-Host '     - tell the helper only: computer name, Windows user name, Tailscale address and the result' -ForegroundColor White }
             Write-Host '     - remove everything later with:  C:\ProgramData\RescueSupport\uninstall.cmd' -ForegroundColor White
             $a = Read-Host -Prompt '   Type Y and press Enter to allow this'
             if ($a -notmatch '^[Yy]') { Write-RLog 'INFO' 'Cancelled by the user. Nothing was changed.'; return 0 }
@@ -834,6 +883,7 @@ function Invoke-Main {
 
         $r = Test-Setup $ts
         $ok = Show-Summary $r
+        Send-Report $ok $(if ($ok) { 'Setup complete' } else { 'Setup finished with problems; see log' }) @{ ip = $r.Ip; dnsName = $r.DnsName; hostKey = (Get-HostKeyFingerprint) }
         if ($script:RebootNeeded) { return 3010 }
         if ($ok) { return 0 } else { return 1 }
     } catch {
@@ -843,6 +893,7 @@ function Invoke-Main {
             Write-Host ''
             Write-Host ("   Stopped: " + (Hide-Secrets $_.Exception.Message)) -ForegroundColor Red
             if ($script:LogFile) { Write-Host ("   Log: " + $script:LogFile) -ForegroundColor DarkGray }
+            if (-not $Uninstall -and -not $Status -and -not $CheckOnly) { Send-Report $false ("Stopped (code {0}): {1}" -f $rc, $_.Exception.Message) @{} }
             return $rc
         }
         Write-RLog 'ERR' ("Unexpected error: " + $_.Exception.Message)

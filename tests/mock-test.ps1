@@ -28,7 +28,7 @@ function New-Env([string]$Name) {
         admin = $true; build = 19045; ptype = 1; net = $true
         capState = 'NotPresent'; capAddFail = $false; capListFail = $false; capAdded = 0
         svc = @{}; fw = @{}; calls = New-Object System.Collections.ArrayList; sigOk = $true
-        builtinRule = $true; dir = $d; msiExit = 0
+        builtinRule = $true; dir = $d; msiExit = 0; gate = 'ok'; gateCalls = (New-Object System.Collections.ArrayList)
     }
     $script:Dir = Join-Path $env:ProgramData 'RescueSupport'
     $script:StateFile = Join-Path $script:Dir 'state.json'
@@ -93,6 +93,17 @@ function Find-TailscaleProductCode { if (Test-Path (Join-Path $env:ProgramFiles 
 function Start-Process { param($FilePath, $ArgumentList, [switch]$Wait, [switch]$PassThru, $WindowStyle, $RedirectStandardOutput, $RedirectStandardError)
     if ($FilePath -eq 'msiexec.exe') { & (Join-Path $root 'tests/fakebin/msiexec.exe') @ArgumentList; return [pscustomobject]@{ ExitCode = [int]$global:Fake.msiExit } }
     throw "unexpected Start-Process $FilePath" }
+function Invoke-Gate { param($Path, $Body, $TimeoutSec)
+    [void]$global:Fake.gateCalls.Add(@($Path, $Body))
+    if ($Path -eq '/redeem') {
+        switch ($global:Fake.gate) {
+            'ok'   { return [pscustomobject]@{ key = $GoodKey } }
+            '404'  { $e = New-Object System.Exception 'not found'; $e | Add-Member -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = 404 }); throw $e }
+            '410'  { $e = New-Object System.Exception 'gone'; $e | Add-Member -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = 410 }); throw $e }
+            default { throw 'The remote name could not be resolved' }
+        }
+    }
+    return [pscustomobject]@{ stored = $true } }
 function Get-AuthenticodeSignature { param($LiteralPath)
     [pscustomobject]@{ Status = $(if ($global:Fake.sigOk) { 'Valid' } else { 'HashMismatch' }); SignerCertificate = [pscustomobject]@{ Subject = 'CN=Tailscale Inc., O=Tailscale Inc., L=Toronto, C=CA' } } }
 
@@ -101,7 +112,7 @@ function Do-Run([hashtable]$Params = @{}) {
     $script:Warnings = New-Object System.Collections.ArrayList; $script:RebootNeeded = $false
     $null = $script:Secrets.Clear()
     $Uninstall = [bool]$Params.Uninstall; $Status = [bool]$Params.Status; $CheckOnly = [bool]$Params.CheckOnly
-    $Yes = $true; $AuthKeyFile = $(if ($Params.AuthKeyFile) { $Params.AuthKeyFile } else { '' }); $PublicKey = ''
+    $Arg1 = $(if ($Params.Arg1) { $Params.Arg1 } else { '' }); $Code = $(if ($Params.Code) { $Params.Code } else { '' }); $Yes = $true; $AuthKeyFile = $(if ($Params.AuthKeyFile) { $Params.AuthKeyFile } else { '' }); $PublicKey = ''
     $buf = New-Object System.Collections.ArrayList
     $res = & { $r = Invoke-Main; $r } 6>&1 | ForEach-Object { if ($_ -is [System.Management.Automation.InformationRecord]) { [void]$buf.Add("$($_.MessageData)") } else { $_ } }
     $code = @($res | Where-Object { $_ -is [int] })[-1]
@@ -218,6 +229,35 @@ $d = New-Env 'f-reboot'; $Fake.msiExit = 3010; Set-Content "$d/key.txt" $GoodKey
 $c = Do-Run @{ AuthKeyFile = "$d/key.txt" }; Assert ($c -eq 3010 -and $script:lastOut -match 'RESTART REQUIRED') "msi 3010 -> reboot-required reported ($c)"
 $d = New-Env 'f-check'
 $c = Do-Run @{ CheckOnly = $true }; Assert ($c -eq 0 -and $Fake.capAdded -eq 0 -and $Fake.fw.Count -eq 0) '-CheckOnly passes and changes nothing'
+
+Write-Host "`n[6b] one-time code flow" -ForegroundColor Cyan
+$code16 = 'abcdefghij234567'
+$d = New-Env 'code-happy'
+$c = Do-Run @{ Code = $code16 }
+Assert ($c -eq 0 -and (Test-Path "$d/ts/up")) "install with Code: key fetched from gate, tailscale up ok (code $c)"
+Assert (-not $script:lastOut -or $script:lastOut -notmatch 'Paste the one-time') 'no key prompt shown when a code is given'
+$rep = @($Fake.gateCalls | Where-Object { $_[0] -eq '/report' })[-1]
+Assert ($rep -and $rep[1].report.ok -eq $true -and $rep[1].report.ip -eq '100.101.102.103' -and $rep[1].report.user -eq 'friend' -and $rep[1].code -eq $code16) 'success report carries ip, user, code'
+Assert (($Fake.gateCalls | ConvertTo-Json -Depth 6) -notmatch 'tskey-') 'key never sent back to the gate'
+Assert ((Get-Content "$d/ts/up-args.log" -Raw) -notmatch 'tskey-') 'key not on tailscale command line (code flow)'
+Assert ((AllText "$d/pd/RescueSupport") -notmatch 'tskey-auth-kTEST') 'no key in logs (code flow)'
+$d = New-Env 'code-404'; $Fake.gate = '404'
+$c = Do-Run @{ Code = $code16 }; Assert ($c -eq 36 -and $script:lastOut -match 'unknown or has expired') "expired code -> 36 with clear message ($c)"
+$rep = @($Fake.gateCalls | Where-Object { $_[0] -eq '/report' })[-1]; Assert ($rep -and $rep[1].report.ok -eq $false) 'failure is reported to the helper'
+$d = New-Env 'code-410'; $Fake.gate = '410'
+$c = Do-Run @{ Code = $code16 }; Assert ($c -eq 36 -and $script:lastOut -match 'already used') "used code -> 36 ($c)"
+$d = New-Env 'code-down'; $Fake.gate = 'down'
+$c = Do-Run @{ Code = $code16 }; Assert ($c -eq 38 -and $script:lastOut -match 'Could not reach') "gate unreachable -> 38 ($c)"
+$d = New-Env 'code-bad'
+$c = Do-Run @{ Code = 'short' }; Assert ($c -eq 36) "malformed code -> 36 ($c)"
+$d = New-Env 'arg1-code'
+$c = Do-Run @{ Arg1 = $code16 }; Assert ($c -eq 0 -and (Test-Path "$d/ts/up")) "positional code (r.cmd CODE) works ($c)"
+$d = New-Env 'arg1-check'
+$c = Do-Run @{ Arg1 = 'check' }; Assert ($c -eq 0 -and $Fake.capAdded -eq 0) 'positional "check" = CheckOnly'
+$d = New-Env 'arg1-bad'
+$c = Do-Run @{ Arg1 = 'banana' }; Assert ($c -eq 2) "unknown option -> 2 ($c)"
+$Fake.gateCalls.Clear(); $d = New-Env 'status-noreport'; $null = Do-Run @{ Status = $true; Code = $code16 }
+Assert (@($Fake.gateCalls | Where-Object { $_[0] -eq '/report' }).Count -eq 0) 'status/check/uninstall never report'
 
 Write-Host "`n[7] published files carry no secrets" -ForegroundColor Cyan
 $pub = (Get-Content (Join-Path $root 'docs/rescue.ps1') -Raw) + (Get-Content (Join-Path $root 'docs/r') -Raw) + (Get-Content (Join-Path $root 'docs/diag.ps1') -Raw)

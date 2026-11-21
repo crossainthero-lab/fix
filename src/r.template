@@ -2,28 +2,43 @@
 setlocal EnableExtensions
 rem Rescue Support launcher. Source: https://github.com/crossainthero-lab/fix
 rem Downloads rescue.ps1, checks its SHA-256 against the value below, then runs it with Windows PowerShell.
-rem Usage:  r.cmd | r.cmd status | r.cmd check | r.cmd uninstall
+rem Usage:  r.cmd CODE | r.cmd | r.cmd status | r.cmd check | r.cmd uninstall   (CODE = one-time code from the helper)
 set "BASE=https://crossainthero-lab.github.io/fix"
 set "WANT=@@RESCUE_SHA256@@"
 set "D=%ProgramData%\RescueSupport"
 set "ARGS=%*"
-if /i "%~1"=="uninstall" set "ARGS=-Uninstall"
-if /i "%~1"=="status" set "ARGS=-Status"
-if /i "%~1"=="check" set "ARGS=-CheckOnly"
-
-net session >nul 2>&1
-if errorlevel 1 (
-  echo.
-  echo  This is NOT an Administrator Command Prompt.
-  echo  Close it, press the Windows key, type cmd, press Ctrl+Shift+Enter, answer Yes, then type the command again.
-  exit /b 10
-)
-
 set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
 if defined PROCESSOR_ARCHITEW6432 set "PS=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
 if not exist "%PS%" (
   echo  Windows PowerShell was not found at "%PS%".
   exit /b 11
+)
+
+net session >nul 2>&1
+if errorlevel 1 (
+  if defined RESCUE_ELEVATING (
+    echo.
+    echo  Administrator rights were not granted, so nothing was changed.
+    exit /b 10
+  )
+  echo.
+  echo  Administrator rights are needed. A Windows permission prompt is about to appear.
+  echo  Choose YES. With the keyboard only: press Alt+Y, or press the Left Arrow key and then Enter.
+  echo  A new window will open and continue there.
+  set "RS_SELF=%~f0"
+  set "RS_ARGS=%*"
+  set "RESCUE_ELEVATING=1"
+  > "%TEMP%\rs-elev.ps1" echo $a='/k ""' + $env:RS_SELF + '" ' + $env:RS_ARGS + '"'
+  >> "%TEMP%\rs-elev.ps1" echo Start-Process -Verb RunAs -FilePath cmd.exe -ArgumentList $a
+  "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%TEMP%\rs-elev.ps1"
+  if errorlevel 1 (
+    del "%TEMP%\rs-elev.ps1" >nul 2>&1
+    echo.
+    echo  The permission prompt was declined or could not be shown, so nothing was changed.
+    exit /b 10
+  )
+  del "%TEMP%\rs-elev.ps1" >nul 2>&1
+  exit /b 0
 )
 
 if not exist "%D%" mkdir "%D%"

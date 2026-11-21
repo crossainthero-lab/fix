@@ -6,7 +6,7 @@ mkdir -p docs
 key=$(cat src/helper_key.pub)
 case "$key" in "ssh-ed25519 "*" rescue-support") ;; *) echo "bad helper key file" >&2; exit 1;; esac
 # the key blob is public; the comment must stay "rescue-support" (no email/host names)
-sed "s|@@HELPER_PUBLIC_KEY@@|${key}|" src/rescue.ps1 > docs/rescue.ps1
+sed "s|@@HELPER_PUBLIC_KEY@@|${key}|; s|@@GATE_URL@@|$(cat src/gate_url.txt)|" src/rescue.ps1 > docs/rescue.ps1
 cp src/diag.ps1 docs/diag.ps1
 sum=$(sha256sum docs/rescue.ps1 | cut -d' ' -f1)
 sed "s|@@RESCUE_SHA256@@|${sum}|" src/r.template | sed 's/$/\r/' > docs/r
