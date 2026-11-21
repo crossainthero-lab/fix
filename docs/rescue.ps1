@@ -191,6 +191,21 @@ function Find-TailscaleProductCode {
     return $code
 }
 
+function Remove-TailscaleLeftovers {
+    # The Tailscale MSI leaves its runtime firewall rule and data folder behind; remove them (only after we installed Tailscale ourselves).
+    try {
+        foreach ($r in @(Get-NetFirewallRule -DisplayName 'Tailscale-Process' -ErrorAction SilentlyContinue)) {
+            $app = $r | Get-NetFirewallApplicationFilter
+            if ($app.Program -like '*\Tailscale\tailscaled.exe') { Remove-NetFirewallRule -Name $r.Name; Write-RLog 'OK' 'Removed the leftover Tailscale firewall rule' }
+        }
+    } catch { Write-RLog 'WARN' ('Could not clean the Tailscale firewall rule: ' + $_.Exception.Message) }
+    $pd = Join-Path $env:ProgramData 'Tailscale'
+    if (Test-Path -LiteralPath $pd) {
+        Remove-Item -LiteralPath $pd -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $pd) { Write-RLog 'WARN' ("Could not fully remove {0}" -f $pd) } else { Write-RLog 'OK' 'Removed the Tailscale data folder' }
+    }
+}
+
 function Get-TailscaleStatus([string]$Exe) {
     # Returns the parsed `tailscale status --json`, or $null when the daemon is not answering.
     if (-not $Exe) { return $null }
@@ -383,7 +398,11 @@ function Set-SshFirewall {
     # The built-in rule that Windows adds with OpenSSH allows SSH from ANY address. If we installed OpenSSH
     # ourselves, turn that one off (re-enabled on uninstall). A pre-existing rule is the owner's choice: warn only.
     $builtin = Get-NetFirewallRule -Name 'OpenSSH-Server-In-TCP' -ErrorAction SilentlyContinue
-    if ($builtin -and $builtin.Enabled -eq 'True') {
+    $builtinAny = $true
+    if ($builtin) { try { $baf = $builtin | Get-NetFirewallAddressFilter; $builtinAny = ($baf.RemoteAddress -contains 'Any') } catch { $builtinAny = $true } }
+    if ($builtin -and $builtin.Enabled -eq 'True' -and -not $builtinAny) {
+        Write-RLog 'OK' 'The existing built-in OpenSSH firewall rule is already limited to specific addresses; left as it is'
+    } elseif ($builtin -and $builtin.Enabled -eq 'True') {
         if (Get-StateBool 'sshdInstalledByUs') {
             Disable-NetFirewallRule -Name 'OpenSSH-Server-In-TCP'
             $script:State['builtinRuleDisabledByUs'] = $true
@@ -789,7 +808,7 @@ function Invoke-Uninstall {
             $code = Find-TailscaleProductCode
             if ($code) {
                 $p = Start-Process msiexec.exe -ArgumentList @('/x', $code, '/qn', '/norestart') -Wait -PassThru
-                if ($p.ExitCode -in 0, 3010) { Write-RLog 'OK' 'Uninstalled Tailscale' } else { $failed = $true; Write-RLog 'ERR' ("Tailscale uninstall exit code {0}" -f $p.ExitCode) }
+                if ($p.ExitCode -in 0, 3010) { Write-RLog 'OK' 'Uninstalled Tailscale'; Remove-TailscaleLeftovers } else { $failed = $true; Write-RLog 'ERR' ("Tailscale uninstall exit code {0}" -f $p.ExitCode) }
             } else { Write-RLog 'WARN' 'Tailscale was installed by this tool but no uninstall entry was found. Remove it from Settings > Apps.' }
         } elseif ($exe) { Write-RLog 'INFO' 'Tailscale was already on this PC before; the program is left installed.' }
     }

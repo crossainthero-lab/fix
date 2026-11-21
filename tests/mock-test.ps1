@@ -58,7 +58,7 @@ function Add-WindowsCapability { param([switch]$Online, $Name, $ErrorAction)
     $global:Fake.capState = 'Installed'
     $global:Fake.svc['sshd'] = [pscustomobject]@{ Name = 'sshd'; Status = 'Stopped'; Start = 'Manual' }
     [IO.File]::WriteAllText((Join-Path $env:ProgramData 'ssh/sshd_config'), "Port 22`nMatch Group administrators`n       AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys`n")
-    $global:Fake.fw['OpenSSH-Server-In-TCP'] = [pscustomobject]@{ Name = 'OpenSSH-Server-In-TCP'; DisplayName = 'OpenSSH Server'; Enabled = 'True' }
+    $global:Fake.fw['OpenSSH-Server-In-TCP'] = [pscustomobject]@{ Name = 'OpenSSH-Server-In-TCP'; DisplayName = 'OpenSSH Server'; Enabled = 'True'; Remote = 'Any' }
     [pscustomobject]@{ RestartNeeded = $false } }
 function Remove-WindowsCapability { param([switch]$Online, $Name) $global:Fake.capState = 'NotPresent'; $global:Fake.svc.Remove('sshd'); [void]$global:Fake.calls.Add('RemoveCap'); [pscustomobject]@{ RestartNeeded = $false } }
 function Get-Service { param([Parameter(Position = 0)]$Name)
@@ -68,7 +68,8 @@ function Set-Service { param($Name, $StartupType, $ErrorAction)
     if ($global:Fake.svc.ContainsKey($Name)) { $global:Fake.svc[$Name].Start = $(if ($StartupType -eq 'Automatic') { 'Auto' } else { "$StartupType" }) } }
 function Start-Service { param($Name, $ErrorAction) $global:Fake.svc[$Name].Status = 'Running' }
 function Stop-Service { param($Name, [switch]$Force) $global:Fake.svc[$Name].Status = 'Stopped' }
-function Get-NetFirewallRule { param($Name, $Direction, $Enabled, $Action, $ErrorAction)
+function Get-NetFirewallRule { param($Name, $DisplayName, $Direction, $Enabled, $Action, $ErrorAction)
+    if ($DisplayName) { return @($global:Fake.fw.Values | Where-Object { $_.DisplayName -eq $DisplayName }) }
     if ($Name) { if ($global:Fake.fw.ContainsKey($Name)) { return $global:Fake.fw[$Name] } else { return $null } }
     return @($global:Fake.fw.Values) }
 function New-NetFirewallRule { param($Name, $DisplayName, $Description, $Direction, $Action, $Protocol, $LocalPort, $RemoteAddress, $Profile, $Enabled)
@@ -78,6 +79,7 @@ function Enable-NetFirewallRule { param($Name) $global:Fake.fw[$Name].Enabled = 
 function Disable-NetFirewallRule { param($Name) $global:Fake.fw[$Name].Enabled = 'False'; [void]$global:Fake.calls.Add("DisableFw:$Name") }
 function Remove-NetFirewallRule { param($Name) $global:Fake.fw.Remove($Name); [void]$global:Fake.calls.Add("RemoveFw:$Name") }
 function Get-NetFirewallPortFilter { param([Parameter(ValueFromPipeline)]$In) process { [pscustomobject]@{ Protocol = 'TCP'; LocalPort = @('22') } } }
+function Get-NetFirewallApplicationFilter { param([Parameter(ValueFromPipeline)]$In) process { [pscustomobject]@{ Program = $In.Program } } }
 function Get-NetFirewallAddressFilter { param([Parameter(ValueFromPipeline)]$In) process { [pscustomobject]@{ RemoteAddress = @($In.Remote) } } }
 function Get-NetTCPConnection { param($LocalPort, $State, $ErrorAction) [pscustomobject]@{ LocalPort = 22 } }
 $script:msiCache = Join-Path $Work 'cached.msi'
@@ -179,12 +181,31 @@ Assert (-not (Test-Path "$d/pf/Tailscale")) 'tailscale uninstalled'
 Assert (-not (Test-Path "$d/ts/up")) 'tailscale logged out'
 Assert (-not (Test-Path "$d/pd/RescueSupport/state.json")) 'state removed'
 
+Write-Host "`n[4b] uninstall removes Tailscale leftovers; restricted built-in rule not disabled" -ForegroundColor Cyan
+$d = New-Env 'leftovers'
+Set-Content "$d/key.txt" $GoodKey -NoNewline
+$null = Do-Run @{ AuthKeyFile = "$d/key.txt" }
+$Fake.fw['ts-proc'] = [pscustomobject]@{ Name = 'ts-proc'; DisplayName = 'Tailscale-Process'; Enabled = 'True'; Remote = 'Any'; Program = 'C:\Program Files\Tailscale\tailscaled.exe' }
+$Fake.fw['other-app'] = [pscustomobject]@{ Name = 'other-app'; DisplayName = 'Tailscale-Process'; Enabled = 'True'; Remote = 'Any'; Program = 'C:\Other\x.exe' }
+New-Item -ItemType Directory "$env:ProgramData/Tailscale/logs" -Force | Out-Null
+$c = Do-Run @{ Uninstall = $true }
+Assert ($c -eq 0 -and -not $Fake.fw.ContainsKey('ts-proc')) 'orphan Tailscale-Process rule removed'
+Assert ($Fake.fw.ContainsKey('other-app')) 'a same-named rule of another program is NOT removed'
+Assert (-not (Test-Path "$env:ProgramData/Tailscale")) 'Tailscale data folder removed'
+$d = New-Env 'restricted-builtin'
+$Fake.capState = 'Installed'; $Fake.svc['sshd'] = [pscustomobject]@{ Name = 'sshd'; Status = 'Running'; Start = 'Auto' }
+[IO.File]::WriteAllText("$d/pd/ssh/sshd_config", "Match Group administrators`n AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys`n")
+$Fake.fw['OpenSSH-Server-In-TCP'] = [pscustomobject]@{ Name = 'OpenSSH-Server-In-TCP'; DisplayName = 'OpenSSH'; Enabled = 'True'; Remote = '192.168.122.0/255.255.255.0' }
+Set-Content "$d/key.txt" $GoodKey -NoNewline
+$c = Do-Run @{ AuthKeyFile = "$d/key.txt" }
+Assert ($c -eq 0 -and $script:lastOut -notmatch 'allows SSH from any network' -and $script:lastOut -match 'already limited') 'no false "any network" warning for an already-restricted rule'
+
 Write-Host "`n[5] pre-existing sshd + tailscale are left alone" -ForegroundColor Cyan
 $d = New-Env 'preexisting'
 $Fake.capState = 'Installed'; $Fake.svc['sshd'] = [pscustomobject]@{ Name = 'sshd'; Status = 'Stopped'; Start = 'Manual' }
 [IO.File]::WriteAllText("$d/pd/ssh/sshd_config", "Match Group administrators`n AuthorizedKeysFile __PROGRAMDATA__/ssh/administrators_authorized_keys`n")
 [IO.File]::WriteAllText("$d/pd/ssh/administrators_authorized_keys", "ssh-ed25519 AAAAEXISTING owner@box`n")
-$Fake.fw['OpenSSH-Server-In-TCP'] = [pscustomobject]@{ Name = 'OpenSSH-Server-In-TCP'; DisplayName = 'OpenSSH'; Enabled = 'True' }
+$Fake.fw['OpenSSH-Server-In-TCP'] = [pscustomobject]@{ Name = 'OpenSSH-Server-In-TCP'; DisplayName = 'OpenSSH'; Enabled = 'True'; Remote = 'Any' }
 New-Item -ItemType Directory "$d/pf/Tailscale" -Force | Out-Null; Copy-Item (Join-Path $root 'tests/fakebin/tailscale') "$d/pf/Tailscale/tailscale.exe"; chmod +x "$d/pf/Tailscale/tailscale.exe"
 New-Item "$d/ts/up" -ItemType File | Out-Null   # already signed in to someone else's tailnet
 $code = Do-Run @{}
