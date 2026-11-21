@@ -94,6 +94,7 @@ The report stays on the PC in `C:\ProgramData\RescueSupport\diag-*.txt`; nothing
 
 - `tests/parse.ps1`: syntax check (run under Windows PowerShell 5.1 and PowerShell 7).
 - `tests/mock-test.ps1`: logic tests of the real script under PowerShell 7 with fake Windows cmdlets and a fake `tailscale`: happy path, idempotent re-run, uninstall, pre-existing components, failure codes, secret redaction. It also downloads the real Tailscale MSI and checks it against Tailscale's published checksum. These are **mock** tests, not a Windows installation.
-- Read-only runs (`-CheckOnly`, `-Status`, `diag.ps1`) were executed on a real Windows 11 VM (PowerShell 5.1).
+- On a real Windows 11 VM (PowerShell 5.1): both scripts parse; `-CheckOnly`, `-Status` and `diag.ps1` ran; the published launcher ran end to end in `check` mode and rejected a tampered fingerprint; the real Tailscale MSI was downloaded and its SHA-256 and Authenticode signer (`O=Tailscale Inc.`) verified; `Get-WindowsCapability` and the firewall scan were exercised read-only.
+- **Not yet run on real Windows:** the actual install and uninstall (OpenSSH feature install, firewall rule creation, key placement, Tailscale MSI install and `tailscale up`). Those paths are covered only by the mock tests above.
 
 Rebuild the published files with `./build.sh` (embeds the helper public key and the script hash).
