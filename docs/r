@@ -40,19 +40,17 @@ if errorlevel 1 (
   exit /b 1
 )
 
-set "GOT="
-for /f "usebackq delims=" %%H in (`"%PS%" -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -LiteralPath '%D%\rescue.ps1.new').Hash.ToLower()"`) do set "GOT=%%H"
-if /i not "%GOT%"=="%WANT%" (
+"%PS%" -NoProfile -Command "$h=(Get-FileHash -Algorithm SHA256 -LiteralPath '%D%\rescue.ps1.new').Hash.ToLower(); if ($h -eq '%WANT%') { exit 0 } else { Write-Host ('   received ' + $h); exit 1 }"
+if errorlevel 1 (
   echo.
-  echo  SECURITY CHECK FAILED - the downloaded script does not match the expected fingerprint.
+  echo  SECURITY CHECK FAILED - the downloaded script does not match the expected fingerprint, or could not be checked.
   echo    expected %WANT%
-  echo    received %GOT%
-  echo  Nothing was run. If you just got a new link, wait ten minutes for the web cache to refresh and try again.
+  echo  Nothing was run. If the link was updated minutes ago, wait ten minutes for the web cache to refresh and try again.
   del "%D%\rescue.ps1.new" >nul 2>&1
   exit /b 2
 )
 move /y "%D%\rescue.ps1.new" "%D%\rescue.ps1" >nul
-echo  Fingerprint verified (SHA-256 %GOT:~0,16%...).
+echo  Fingerprint verified: SHA-256 %WANT:~0,16%...
 
 "%PS%" -NoProfile -ExecutionPolicy Bypass -File "%D%\rescue.ps1" %ARGS%
 set "RC=%ERRORLEVEL%"
