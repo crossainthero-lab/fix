@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Fake tailscale CLI for tests. State lives in $FAKE_TS_STATE.
+st="${FAKE_TS_STATE:?}"
+case "$1" in
+  status) if [ -f "$st/up" ]; then echo '{"BackendState":"Running","CurrentTailnet":{"Name":"test.example"},"Self":{"DNSName":"rescue-testpc.tail1234.ts.net."}}'; else echo '{"BackendState":"NeedsLogin"}'; fi ;;
+  ip) if [ -f "$st/up" ]; then echo 100.101.102.103; else echo "not logged in" >&2; exit 1; fi ;;
+  up)
+    key=""; for a in "$@"; do case "$a" in --auth-key=*) key="${a#--auth-key=}";; esac; done
+    echo "$*" >> "$st/up-args.log"
+    case "$key" in file:*) key=$(cat "${key#file:}") ;; esac
+    if [ "$key" = "$FAKE_GOOD_KEY" ]; then touch "$st/up"; echo "Success."; exit 0; fi
+    echo "backend error: invalid key: $key" >&2; exit 1 ;;
+  logout) rm -f "$st/up"; exit 0 ;;
+  *) exit 0 ;;
+esac

@@ -1,0 +1,4 @@
+* text=auto
+docs/r -text
+docs/rescue.ps1 -text
+docs/diag.ps1 -text

@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rescue Support</title>
+<style>
+  :root { color-scheme: light dark; --bg: #fbfbf9; --fg: #1b1b1a; --muted: #5d5d58; --line: #d9d9d2; --code: #efefe9; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #161615; --fg: #ececE8; --muted: #a2a29a; --line: #34342f; --code: #232321; } }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 16px/1.55 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 42rem; margin: 0 auto; padding: 2.5rem 1rem 4rem; }
+  h1 { font-size: 1.6rem; margin: 0 0 .5rem; }
+  h2 { font-size: 1.05rem; margin: 2rem 0 .4rem; }
+  p, li { color: var(--fg); }
+  .muted { color: var(--muted); }
+  code, pre { background: var(--code); border: 1px solid var(--line); border-radius: 6px; font: 14px/1.5 ui-monospace, Consolas, monospace; }
+  code { padding: .1rem .35rem; }
+  pre { padding: .75rem .9rem; overflow-x: auto; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Rescue Support</h1>
+  <p>A small, open script that lets one trusted person help fix your Windows 10 PC remotely. It only runs when you start it, and you can remove everything afterwards.</p>
+
+  <h2>What it does</h2>
+  <ul>
+    <li>Installs Windows' own OpenSSH Server and Tailscale (downloaded from tailscale.com; checksum and signature are verified).</li>
+    <li>Allows SSH only from Tailscale addresses. Nothing is opened on your router.</li>
+    <li>Adds one marked SSH public key for the helper. Windows still asks for a key or your password.</li>
+    <li>Asks you to type <code>Y</code> before it changes anything.</li>
+  </ul>
+
+  <h2>What it never does</h2>
+  <p>It does not turn off Defender or UAC, create accounts, set passwords, or upload anything.</p>
+
+  <h2>Read it first</h2>
+  <p><a href="rescue.ps1">rescue.ps1</a> (installer), <a href="r">r</a> (launcher), <a href="diag.ps1">diag.ps1</a> (optional read-only diagnostics), <a href="SHA256SUMS">SHA256SUMS</a>. Source: <a href="https://github.com/crossainthero-lab/fix">github.com/crossainthero-lab/fix</a>.</p>
+
+  <h2>Remove everything</h2>
+  <pre>C:\ProgramData\RescueSupport\uninstall.cmd</pre>
+  <p class="muted">Run it from an Administrator Command Prompt.</p>
+</main>
+</body>
+</html>

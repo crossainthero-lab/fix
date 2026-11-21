@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+pf="${FAKE_PROGRAMFILES:?}"
+if [ "$1" = "/i" ]; then mkdir -p "$pf/Tailscale"; cp "$(dirname "$0")/tailscale" "$pf/Tailscale/tailscale.exe"; chmod +x "$pf/Tailscale/tailscale.exe"; echo "$*" >> "$FAKE_TS_STATE/msi.log"; exit ${FAKE_MSI_EXIT:-0}; fi
+if [ "$1" = "/x" ]; then rm -rf "$pf/Tailscale"; exit 0; fi

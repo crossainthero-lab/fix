@@ -1,0 +1,61 @@
+@echo off
+setlocal EnableExtensions
+rem Rescue Support launcher. Source: https://github.com/crossainthero-lab/fix
+rem Downloads rescue.ps1, checks its SHA-256 against the value below, then runs it with Windows PowerShell.
+rem Usage:  r.cmd | r.cmd status | r.cmd check | r.cmd uninstall
+set "BASE=https://crossainthero-lab.github.io/fix"
+set "WANT=@@RESCUE_SHA256@@"
+set "D=%ProgramData%\RescueSupport"
+set "ARGS=%*"
+if /i "%~1"=="uninstall" set "ARGS=-Uninstall"
+if /i "%~1"=="status" set "ARGS=-Status"
+if /i "%~1"=="check" set "ARGS=-CheckOnly"
+
+net session >nul 2>&1
+if errorlevel 1 (
+  echo.
+  echo  This is NOT an Administrator Command Prompt.
+  echo  Close it, press the Windows key, type cmd, press Ctrl+Shift+Enter, answer Yes, then type the command again.
+  exit /b 10
+)
+
+set "PS=%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe"
+if defined PROCESSOR_ARCHITEW6432 set "PS=%SystemRoot%\Sysnative\WindowsPowerShell\v1.0\powershell.exe"
+if not exist "%PS%" (
+  echo  Windows PowerShell was not found at "%PS%".
+  exit /b 11
+)
+
+if not exist "%D%" mkdir "%D%"
+rem Only SYSTEM and Administrators may write here, so nobody can swap the script between check and run.
+icacls "%D%" /inheritance:r /grant:r "*S-1-5-32-544:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" >nul 2>&1
+
+echo.
+echo  Rescue Support - downloading installer script...
+curl.exe -fsSL --proto =https --retry 3 --connect-timeout 20 -H "Cache-Control: no-cache" "%BASE%/rescue.ps1" -o "%D%\rescue.ps1.new"
+if errorlevel 1 (
+  echo.
+  echo  DOWNLOAD FAILED. Check the internet connection and the date and time on this PC, then try again.
+  del "%D%\rescue.ps1.new" >nul 2>&1
+  exit /b 1
+)
+
+set "GOT="
+for /f "usebackq delims=" %%H in (`"%PS%" -NoProfile -Command "(Get-FileHash -Algorithm SHA256 -LiteralPath '%D%\rescue.ps1.new').Hash.ToLower()"`) do set "GOT=%%H"
+if /i not "%GOT%"=="%WANT%" (
+  echo.
+  echo  SECURITY CHECK FAILED - the downloaded script does not match the expected fingerprint.
+  echo    expected %WANT%
+  echo    received %GOT%
+  echo  Nothing was run. If you just got a new link, wait ten minutes for the web cache to refresh and try again.
+  del "%D%\rescue.ps1.new" >nul 2>&1
+  exit /b 2
+)
+move /y "%D%\rescue.ps1.new" "%D%\rescue.ps1" >nul
+echo  Fingerprint verified (SHA-256 %GOT:~0,16%...).
+
+"%PS%" -NoProfile -ExecutionPolicy Bypass -File "%D%\rescue.ps1" %ARGS%
+set "RC=%ERRORLEVEL%"
+echo.
+if "%RC%"=="0" (echo  Finished OK.) else if "%RC%"=="3010" (echo  Finished - a Windows restart is required.) else (echo  Finished with code %RC%.)
+exit /b %RC%
